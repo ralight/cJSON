@@ -241,6 +241,7 @@ static cJSON *cJSON_New_Item(const internal_hooks * const hooks)
     {
         memset(node, '\0', sizeof(cJSON));
     }
+	node->precision = -1;
 
     return node;
 }
@@ -539,8 +540,27 @@ static cJSON_bool compare_double(double a, double b)
     return (fabs(a - b) <= maxVal * DBL_EPSILON);
 }
 
+/* Calculate what precision to use when printing a number, based on the precision
+ * from the previous level (in `precision`) and the current level (in `item`).
+ * If the current level has precision < 0 or > 15, the use the precision from the
+ * previous level.
+ * If the final precision is < 0 or > 15, then the default cJSON printing is used,
+ * otherwise the user provided precision is used.
+ */
+static signed char calculate_precision(const cJSON * const item, signed char precision)
+{
+    if (item->precision < 0 || item->precision > 15)
+    {
+        return precision;
+    }
+    else
+    {
+        return item->precision;
+    }
+}
+
 /* Render the number nicely from the given item into a string. */
-static cJSON_bool print_number(const cJSON * const item, printbuffer * const output_buffer)
+static cJSON_bool print_number(const cJSON * const item, printbuffer * const output_buffer, signed char precision)
 {
     unsigned char *output_pointer = NULL;
     double d = item->valuedouble;
@@ -549,6 +569,7 @@ static cJSON_bool print_number(const cJSON * const item, printbuffer * const out
     unsigned char number_buffer[26] = {0}; /* temporary buffer to print the number into */
     unsigned char decimal_point = get_decimal_point();
     double test = 0.0;
+    signed char local_precision;
 
     if (output_buffer == NULL)
     {
@@ -562,14 +583,23 @@ static cJSON_bool print_number(const cJSON * const item, printbuffer * const out
     }
     else
     {
-        /* Try 15 decimal places of precision to avoid nonsignificant nonzero digits */
-        length = sprintf((char*)number_buffer, "%1.15g", d);
+        local_precision = calculate_precision(item, precision);
 
-        /* Check whether the original double can be recovered */
-        if ((sscanf((char*)number_buffer, "%lg", &test) != 1) || !compare_double((double)test, d))
+        if (local_precision < 0 || local_precision > 15)
         {
-            /* If not, print with 17 decimal places of precision */
-            length = sprintf((char*)number_buffer, "%1.17g", d);
+            /* Try 15 decimal places of precision to avoid nonsignificant nonzero digits */
+            length = sprintf((char*)number_buffer, "%1.15g", d);
+
+            /* Check whether the original double can be recovered */
+            if ((sscanf((char*)number_buffer, "%lg", &test) != 1) || !compare_double((double)test, d))
+            {
+                /* If not, print with 17 decimal places of precision */
+                length = sprintf((char*)number_buffer, "%1.17g", d);
+            }
+        }
+        else
+        {
+            length = sprintf((char*)number_buffer, "%1.*f", local_precision, d);
         }
     }
 
@@ -1022,11 +1052,11 @@ static cJSON_bool print_string(const cJSON * const item, printbuffer * const p)
 
 /* Predeclare these prototypes. */
 static cJSON_bool parse_value(cJSON * const item, parse_buffer * const input_buffer);
-static cJSON_bool print_value(const cJSON * const item, printbuffer * const output_buffer);
+static cJSON_bool print_value(const cJSON * const item, printbuffer * const output_buffer, signed char precision);
 static cJSON_bool parse_array(cJSON * const item, parse_buffer * const input_buffer);
-static cJSON_bool print_array(const cJSON * const item, printbuffer * const output_buffer);
+static cJSON_bool print_array(const cJSON * const item, printbuffer * const output_buffer, signed char precision);
 static cJSON_bool parse_object(cJSON * const item, parse_buffer * const input_buffer);
-static cJSON_bool print_object(const cJSON * const item, printbuffer * const output_buffer);
+static cJSON_bool print_object(const cJSON * const item, printbuffer * const output_buffer, signed char precision);
 
 /* Utility to jump whitespace and cr/lf */
 static parse_buffer *buffer_skip_whitespace(parse_buffer * const buffer)
@@ -1197,7 +1227,7 @@ static unsigned char *print(const cJSON * const item, cJSON_bool format, const i
     }
 
     /* print the value */
-    if (!print_value(item, buffer))
+    if (!print_value(item, buffer, item->precision))
     {
         goto fail;
     }
@@ -1274,7 +1304,7 @@ CJSON_PUBLIC(char *) cJSON_PrintBuffered(const cJSON *item, int prebuffer, cJSON
     p.format = fmt;
     p.hooks = global_hooks;
 
-    if (!print_value(item, &p))
+    if (!print_value(item, &p, item->precision))
     {
         global_hooks.deallocate(p.buffer);
         return NULL;
@@ -1299,7 +1329,7 @@ CJSON_PUBLIC(cJSON_bool) cJSON_PrintPreallocated(cJSON *item, char *buffer, cons
     p.format = format;
     p.hooks = global_hooks;
 
-    return print_value(item, &p);
+    return print_value(item, &p, item->precision);
 }
 
 /* Parser core - when encountering text, process appropriately. */
@@ -1358,7 +1388,7 @@ static cJSON_bool parse_value(cJSON * const item, parse_buffer * const input_buf
 }
 
 /* Render a value to text. */
-static cJSON_bool print_value(const cJSON * const item, printbuffer * const output_buffer)
+static cJSON_bool print_value(const cJSON * const item, printbuffer * const output_buffer, signed char precision)
 {
     unsigned char *output = NULL;
 
@@ -1397,7 +1427,7 @@ static cJSON_bool print_value(const cJSON * const item, printbuffer * const outp
             return true;
 
         case cJSON_Number:
-            return print_number(item, output_buffer);
+            return print_number(item, output_buffer, calculate_precision(item, precision));
 
         case cJSON_Raw:
         {
@@ -1421,10 +1451,10 @@ static cJSON_bool print_value(const cJSON * const item, printbuffer * const outp
             return print_string(item, output_buffer);
 
         case cJSON_Array:
-            return print_array(item, output_buffer);
+            return print_array(item, output_buffer, calculate_precision(item, precision));
 
         case cJSON_Object:
-            return print_object(item, output_buffer);
+            return print_object(item, output_buffer, calculate_precision(item, precision));
 
         default:
             return false;
@@ -1530,7 +1560,7 @@ fail:
 }
 
 /* Render an array to text */
-static cJSON_bool print_array(const cJSON * const item, printbuffer * const output_buffer)
+static cJSON_bool print_array(const cJSON * const item, printbuffer * const output_buffer, signed char precision)
 {
     unsigned char *output_pointer = NULL;
     size_t length = 0;
@@ -1555,7 +1585,7 @@ static cJSON_bool print_array(const cJSON * const item, printbuffer * const outp
 
     while (current_element != NULL)
     {
-        if (!print_value(current_element, output_buffer))
+        if (!print_value(current_element, output_buffer, calculate_precision(item, precision)))
         {
             return false;
         }
@@ -1705,7 +1735,7 @@ fail:
 }
 
 /* Render an object to text. */
-static cJSON_bool print_object(const cJSON * const item, printbuffer * const output_buffer)
+static cJSON_bool print_object(const cJSON * const item, printbuffer * const output_buffer, signed char precision)
 {
     unsigned char *output_pointer = NULL;
     size_t length = 0;
@@ -1770,7 +1800,7 @@ static cJSON_bool print_object(const cJSON * const item, printbuffer * const out
         output_buffer->offset += length;
 
         /* print value */
-        if (!print_value(current_item, output_buffer))
+        if (!print_value(current_item, output_buffer, calculate_precision(item, precision)))
         {
             return false;
         }

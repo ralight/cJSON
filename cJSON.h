@@ -120,6 +120,8 @@ typedef struct cJSON
 
     /* The item's name string, if this item is the child of, or is in the list of subitems of an object. */
     char *string;
+    /* The precision to use when printing, if type==cJSON_Number. If < 0 or > 15, use the default formatting. */
+    signed char precision;
 } cJSON;
 
 typedef struct cJSON_Hooks
